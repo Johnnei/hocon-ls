@@ -201,7 +201,7 @@ impl<'de, 'a> Deserializer<'de> for &'a mut HoconDeserializer<'de> {
     {
         match self.input {
             HoconValue::HoconString(HoconString::Quoted(value)) => visitor.visit_borrowed_str(value),
-            HoconValue::HoconString(HoconString::Unqouted(value)) => visitor.visit_borrowed_str(value),
+            HoconValue::HoconString(HoconString::Unquoted(value)) => visitor.visit_borrowed_str(value),
             _ => Err(HoconError::ParseError {
                 msg: "Expected string type".to_owned(),
             }),
@@ -316,7 +316,8 @@ impl<'de, 'a> Deserializer<'de> for &'a mut HoconDeserializer<'de> {
     {
         match &mut self.input {
             HoconValue::HoconObject(ref mut map) => match map.first().take().map(|s| s.to_owned()) {
-                Some(HoconField::KeyValue(key, _)) => visitor.visit_borrowed_str(key),
+                Some(HoconField::KeyValue(HoconString::Quoted(key), _)) => visitor.visit_borrowed_str(key),
+                Some(HoconField::KeyValue(HoconString::Unquoted(key), _)) => visitor.visit_borrowed_str(key),
                 _ => Err(HoconError::ParseError {
                     msg: "Expected non-empty object".to_owned(),
                 }),

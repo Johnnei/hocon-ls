@@ -29,16 +29,26 @@ pub enum HoconInclusion<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum HoconField<'a> {
     Include(HoconInclusion<'a>),
-    KeyValue(&'a str, HoconValue<'a>),
+    KeyValue(HoconString<'a>, HoconValue<'a>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum HoconString<'a> {
     Quoted(&'a str),
-    Unqouted(&'a str),
+    Unquoted(&'a str),
+}
+
+/// Represents the concatenation of two hocon values while preserving the white space in between the
+/// two values
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoconConcatenation<'a> {
+    pub a: HoconValue<'a>,
+    pub whitespace: Option<&'a str>,
+    pub b: HoconValue<'a>,
 }
 
 /// Represents a hocon value within the AST representation.
+/// As this meant for AST the structure is kept close to the source document
 #[derive(Clone, Debug, PartialEq)]
 pub enum HoconValue<'a> {
     HoconString(HoconString<'a>),
@@ -48,6 +58,7 @@ pub enum HoconValue<'a> {
     HoconBoolean(bool),
     HoconNull,
     HoconInclude(HoconInclusion<'a>),
+    HoconConcat(Box<HoconConcatenation<'a>>),
 }
 
 /// Represents the various modes of failure while parsing or evaluating hocon files.
@@ -60,7 +71,7 @@ pub enum HoconError {
 
 /// Parses the given input as a Hocon document into a Hocon AST.
 pub fn parse<'a, E: ParseError<&'a str>>(input: &'a str) -> Result<HoconValue<'a>, HoconError> {
-    let r = alt((empty_content, parse_object)).parse(input);
+    let r = alt((empty_content, parse_root_object)).parse(input);
     match r {
         Ok((_, value)) => Ok(value),
         Err(nom::Err::Error(e)) => {
@@ -152,6 +163,14 @@ fn quoted_string<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str,
     .parse(input)
 }
 
+fn parse_string<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconString<'a>, E> {
+    alt((
+        map(unquoted_string, HoconString::Unquoted),
+        map(quoted_string, HoconString::Quoted),
+    ))
+    .parse(input)
+}
+
 fn number<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
     map(double, HoconValue::HoconNumber).parse(input)
 }
@@ -180,31 +199,55 @@ fn include<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, Hocon
 }
 
 fn parse_value<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
-    alt((
+    let (remainder, a) = alt((
         null,
         map(include, HoconValue::HoconInclude),
         boolean,
         number,
         array,
         parse_object,
-        map(unquoted_string, |v| HoconValue::HoconString(HoconString::Unqouted(v))),
-        map(quoted_string, |v| HoconValue::HoconString(HoconString::Quoted(v))),
+        map(parse_string, HoconValue::HoconString),
     ))
-    .parse(input)
+    .parse(input)?;
+
+    fn concat_whitespace<'a, 'b, E: ParseError<&'a str>>(
+        prior: &'b HoconValue<'a>,
+    ) -> impl Fn(&'a str) -> IResult<&'a str, Option<&'a str>, E> + 'b {
+        |input| match prior {
+            HoconValue::HoconObject(_) | HoconValue::HoconArray(_) => map(whitespace, |_| None::<&'a str>).parse(input),
+            // Do not allow new line spanning concatenation for string concatenation
+            _ => map(take_while(|c| c != '\n' && is_hocon_whitespace(c)), Some).parse(input),
+        }
+    }
+
+    let (remainder, maybe_concat) = opt((concat_whitespace(&a), parse_value)).parse(remainder)?;
+    let result = match maybe_concat {
+        None => a,
+        Some((ws, b)) => HoconValue::HoconConcat(Box::new(HoconConcatenation { a, whitespace: ws, b })),
+    };
+
+    Ok((remainder, result))
 }
 
 fn next_element_whitespace<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, (), E> {
-    map((whitespace, opt(char(','))), |_| ()).parse(input)
+    map(
+        opt((
+            take_while(|c| c != '\n' && c != ',' && is_hocon_whitespace(c)),
+            char(','),
+        )),
+        |_| (),
+    )
+    .parse(input)
 }
 
-fn key_value<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, (&'a str, HoconValue<'a>), E> {
+fn key_value<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, (HoconString<'a>, HoconValue<'a>), E> {
     fn separator<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, (), E> {
         map(alt((char(':'), char('='), peek(char('{')))), |_| ()).parse(input)
     }
 
     let (input, (_, path, _, _, _, value, _)) = (
         whitespace,
-        alt((quoted_string, unquoted_string)),
+        parse_string,
         whitespace,
         separator,
         whitespace,
@@ -242,22 +285,30 @@ fn array<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconVa
     .parse(input)
 }
 
+fn parse_root_object<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
+    map(
+        alt((
+            delimited(char('{'), many0(object_field), (whitespace, char('}'))),
+            many1(object_field),
+        )),
+        HoconValue::HoconObject,
+    )
+    .parse(input)
+}
+
 fn parse_object<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
-    fn parse_inner0<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
-        map(many0(object_field), HoconValue::HoconObject).parse(input)
-    }
-
-    fn parse_inner1<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
-        map(many1(object_field), HoconValue::HoconObject).parse(input)
-    }
-
-    alt((delimited(char('{'), parse_inner0, char('}')), parse_inner1)).parse(input)
+    map(
+        delimited(char('{'), many0(object_field), (whitespace, char('}'))),
+        HoconValue::HoconObject,
+    )
+    .parse(input)
 }
 
 #[cfg(test)]
 mod tests {
 
     use nom_language::error::VerboseError;
+    use rstest::rstest;
 
     use super::*;
     use crate::parser::HoconValue;
@@ -309,6 +360,57 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case::unquote_unquote("one = two three", false, false)]
+    #[case::quote_unquote("one =\"two\" three", true, false)]
+    #[case::unquote_quote("one = two \"three\"", false, true)]
+    #[case::quote_quote("one = \"two\" \"three\"", true, true)]
+    fn test_concat_unquoted_strings(#[case] input: &str, #[case] a_quoted: bool, #[case] b_quoted: bool) {
+        let a = if a_quoted {
+            HoconString::Quoted("two")
+        } else {
+            HoconString::Unquoted("two")
+        };
+        let b = if b_quoted {
+            HoconString::Quoted("three")
+        } else {
+            HoconString::Unquoted("three")
+        };
+
+        let expected = vec![HoconField::KeyValue(
+            HoconString::Unquoted("one"),
+            HoconValue::HoconConcat(Box::new(HoconConcatenation {
+                a: HoconValue::HoconString(a),
+                whitespace: Some(" "),
+                b: HoconValue::HoconString(b),
+            })),
+        )];
+        assert_eq!(
+            parse::<VerboseError<&str>>(input),
+            Ok(HoconValue::HoconObject(expected))
+        );
+    }
+
+    #[rstest]
+    #[case::string_boolean(
+        "one false",
+        HoconValue::HoconString(HoconString::Unquoted("one")),
+        HoconValue::HoconBoolean(false)
+    )]
+    #[case::string_number(
+        "one 12",
+        HoconValue::HoconString(HoconString::Unquoted("one")),
+        HoconValue::HoconNumber(12.0)
+    )]
+    fn test_concat_simple_types(#[case] input: &str, #[case] a: HoconValue, #[case] b: HoconValue) {
+        let expected = HoconValue::HoconConcat(Box::new(HoconConcatenation {
+            a,
+            whitespace: Some(" "),
+            b,
+        }));
+        assert_eq!(parse_value::<VerboseError<&str>>(input), Ok(("", expected)));
+    }
+
     #[test]
     fn test_quoted_string() {
         assert_eq!(quoted_string::<VerboseError<&str>>("\"test\""), Ok(("", "test")));
@@ -336,7 +438,22 @@ mod tests {
     fn test_key_value() {
         assert_eq!(
             key_value::<VerboseError<&str>>("test = true"),
-            Ok(("", ("test", HoconValue::HoconBoolean(true))))
+            Ok(("", (HoconString::Unquoted("test"), HoconValue::HoconBoolean(true))))
+        );
+    }
+
+    #[test]
+    fn test_key_value_multiple_fields() {
+        let content = r#""hello": "world", "world": "hello""#;
+        assert_eq!(
+            key_value::<VerboseError<&str>>(content),
+            Ok((
+                r#" "world": "hello""#,
+                (
+                    HoconString::Quoted("hello"),
+                    HoconValue::HoconString(HoconString::Quoted("world"))
+                )
+            ))
         );
     }
 
@@ -388,7 +505,7 @@ mod tests {
     fn parse_basic_json_object() {
         let content = r#"{ "hello": "world" }"#;
         let expected = vec![HoconField::KeyValue(
-            "hello",
+            HoconString::Quoted("hello"),
             HoconValue::HoconString(HoconString::Quoted("world")),
         )];
         assert_eq!(
@@ -401,8 +518,14 @@ mod tests {
     fn parse_json_object_with_two_keys() {
         let content = r#"{ "hello": "world", "world": "hello" }"#;
         let expected = vec![
-            HoconField::KeyValue("hello", HoconValue::HoconString(HoconString::Quoted("world"))),
-            HoconField::KeyValue("world", HoconValue::HoconString(HoconString::Quoted("hello"))),
+            HoconField::KeyValue(
+                HoconString::Quoted("hello"),
+                HoconValue::HoconString(HoconString::Quoted("world")),
+            ),
+            HoconField::KeyValue(
+                HoconString::Quoted("world"),
+                HoconValue::HoconString(HoconString::Quoted("hello")),
+            ),
         ];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
@@ -411,14 +534,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_json_object_with_two_keys_multiline() {
+    fn parse_json_object_with_two_quoted_keys_multiline() {
         let content = r#"{
             "hello": "world",
             "world": "hello"
         }"#;
         let expected = vec![
-            HoconField::KeyValue("hello", HoconValue::HoconString(HoconString::Quoted("world"))),
-            HoconField::KeyValue("world", HoconValue::HoconString(HoconString::Quoted("hello"))),
+            HoconField::KeyValue(
+                HoconString::Quoted("hello"),
+                HoconValue::HoconString(HoconString::Quoted("world")),
+            ),
+            HoconField::KeyValue(
+                HoconString::Quoted("world"),
+                HoconValue::HoconString(HoconString::Quoted("hello")),
+            ),
         ];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
@@ -427,14 +556,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_hocon_object_with_two_keys() {
+    fn parse_hocon_object_with_two_unquoted_keys() {
         let content = r#"{
             hello: "world"
             world: "hello"
         }"#;
         let expected = vec![
-            HoconField::KeyValue("hello", HoconValue::HoconString(HoconString::Quoted("world"))),
-            HoconField::KeyValue("world", HoconValue::HoconString(HoconString::Quoted("hello"))),
+            HoconField::KeyValue(
+                HoconString::Unquoted("hello"),
+                HoconValue::HoconString(HoconString::Quoted("world")),
+            ),
+            HoconField::KeyValue(
+                HoconString::Unquoted("world"),
+                HoconValue::HoconString(HoconString::Quoted("hello")),
+            ),
         ];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
@@ -456,7 +591,10 @@ mod tests {
         "#;
         let expected = vec![
             HoconField::Include(HoconInclusion::File("test.conf")),
-            HoconField::KeyValue("hello", HoconValue::HoconString(HoconString::Quoted("world"))),
+            HoconField::KeyValue(
+                HoconString::Unquoted("hello"),
+                HoconValue::HoconString(HoconString::Quoted("world")),
+            ),
         ];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
@@ -470,7 +608,7 @@ mod tests {
             hello = include file("test.conf")
         "#;
         let expected = vec![HoconField::KeyValue(
-            "hello",
+            HoconString::Unquoted("hello"),
             HoconValue::HoconInclude(HoconInclusion::File("test.conf")),
         )];
         assert_eq!(
