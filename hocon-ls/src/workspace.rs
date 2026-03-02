@@ -15,7 +15,7 @@ struct OpenFile {
     content: Box<String>,
 }
 
-impl <'a> OpenFile {
+impl<'a> OpenFile {
     fn new(content: String) -> Result<OpenFile, HoconError> {
         let content = Box::new(content);
         match parse::<VerboseError<&str>>(&content) {
@@ -24,10 +24,10 @@ impl <'a> OpenFile {
                     // As long as access to hocon is restricted to the lifetime of OpenFile, this
                     // transmute is safe.
                     hocon: unsafe { std::mem::transmute(hocon) },
-                    content
+                    content,
                 })
             }
-            Err(e) => Err(e)
+            Err(e) => Err(e),
         }
     }
 
@@ -39,7 +39,6 @@ impl <'a> OpenFile {
 }
 
 impl<'a> Workspace {
-
     pub fn new() -> Self {
         Workspace {
             open_files: HashMap::new(),

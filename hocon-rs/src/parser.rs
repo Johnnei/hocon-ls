@@ -2,14 +2,14 @@ use std::collections::HashMap;
 
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_till1, take_while},
-    character::{anychar, complete::char},
+    bytes::complete::{tag, take_while, take_while_m_n},
+    character::{anychar, complete::char, one_of},
     combinator::{all_consuming, map, not, opt, peek, recognize, value, verify},
     error::ParseError,
     multi::{many0, many1, separated_list0},
     number::complete::double,
     sequence::{delimited, preceded, terminated},
-    AsChar, IResult, Input, Parser,
+    IResult, Parser,
 };
 use nom_language::error::convert_error;
 use thiserror::Error;
@@ -137,15 +137,19 @@ fn unquoted_string<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a st
 }
 
 fn quoted_string<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, &'a str, E> {
-    fn is_string_char(c: char) -> bool {
-        !(c.is_alphanum() || c == '.')
-    }
-
-    fn parse_str<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, &'a str, E> {
-        input.split_at_position_complete(is_string_char)
-    }
-
-    delimited(tag("\""), parse_str, tag("\"")).parse(input)
+    delimited(
+        tag("\""),
+        recognize(many0(alt((
+            map(
+                (tag("\\u"), take_while_m_n(4, 4, |c: char| c.is_ascii_hexdigit())),
+                |_| (),
+            ),
+            map((tag("\\"), one_of("\"\\/bfnrt")), |_| ()),
+            map((not(one_of("\"\\")), anychar), |_| ()),
+        )))),
+        tag("\""),
+    )
+    .parse(input)
 }
 
 fn number<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
@@ -310,12 +314,21 @@ mod tests {
         assert_eq!(quoted_string::<VerboseError<&str>>("\"test\""), Ok(("", "test")));
     }
 
-    #[ignore]
+    #[test]
+    fn test_quoted_string_empty() {
+        assert_eq!(quoted_string::<VerboseError<&str>>("\"\""), Ok(("", "")));
+    }
+
+    #[test]
+    fn test_quoted_string_unicode_escape() {
+        assert_eq!(quoted_string::<VerboseError<&str>>("\"\\u12AB\""), Ok(("", "\\u12AB")));
+    }
+
     #[test]
     fn test_quoted_string_with_escaped_quote() {
         assert_eq!(
-            quoted_string::<VerboseError<&str>>("\"testy \\\" test\""),
-            Ok(("", "testy \" test"))
+            quoted_string::<VerboseError<&str>>(r#""testy \" test""#),
+            Ok(("", "testy \\\" test"))
         );
     }
 
