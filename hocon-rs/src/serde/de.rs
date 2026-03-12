@@ -315,7 +315,7 @@ impl<'de, 'a> Deserializer<'de> for &'a mut HoconDeserializer<'de> {
         V: Visitor<'de>,
     {
         match &mut self.input {
-            HoconValue::HoconObject(ref mut map) => match map.first().take().map(|s| s.to_owned()) {
+            HoconValue::HoconObject(map) => match map.first().map(|s| s.to_owned()) {
                 Some(HoconField::KeyValue(HoconString::Quoted(key), _)) => visitor.visit_borrowed_str(key),
                 Some(HoconField::KeyValue(HoconString::Unquoted(key), _)) => visitor.visit_borrowed_str(key),
                 _ => Err(HoconError::ParseError {

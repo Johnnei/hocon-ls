@@ -213,7 +213,7 @@ fn parse_value<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, H
     fn concat_whitespace<'a, 'b, E: ParseError<&'a str>>(
         prior: &'b HoconValue<'a>,
     ) -> impl Fn(&'a str) -> IResult<&'a str, Option<&'a str>, E> + 'b {
-        |input| match prior {
+        move |input| match prior {
             HoconValue::HoconObject(_) | HoconValue::HoconArray(_) => map(whitespace, |_| None::<&'a str>).parse(input),
             // Do not allow new line spanning concatenation for string concatenation
             _ => map(take_while(|c| c != '\n' && is_hocon_whitespace(c)), Some).parse(input),

@@ -3,4 +3,4 @@ members = [
 	"hocon-rs",
 	"hocon-ls",
 ]
-resolver = "2"
+resolver = "3"
