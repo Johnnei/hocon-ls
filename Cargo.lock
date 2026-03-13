@@ -111,23 +111,12 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 name = "hocon-ls"
 version = "0.1.0"
 dependencies = [
- "hocon-rs",
  "lsp-server",
  "lsp-types",
  "nom-language",
+ "rusty-hocon",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "hocon-rs"
-version = "0.1.0"
-dependencies = [
- "nom",
- "nom-language",
- "rstest",
- "serde",
- "thiserror",
 ]
 
 [[package]]
@@ -305,6 +294,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
 dependencies = [
  "semver",
+]
+
+[[package]]
+name = "rusty-hocon"
+version = "0.1.0"
+dependencies = [
+ "nom",
+ "nom-language",
+ "rstest",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 [workspace]
 members = [
-	"hocon-rs",
+	"rusty-hocon",
 	"hocon-ls",
 ]
 resolver = "3"

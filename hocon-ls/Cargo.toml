@@ -6,7 +6,7 @@ license = "Apache-2.0"
 rust-version = "1.93"
 
 [dependencies]
-hocon-rs = { path = "../hocon-rs" }
+rusty-hocon = { path = "../rusty-hocon" }
 lsp-server = "0.7.6"
 serde = "1.0.204"
 serde_json = "1.0.120"

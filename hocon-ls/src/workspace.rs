@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hocon_rs::parser::{parse, HoconError, HoconValue};
+use rusty_hocon::parser::{parse, HoconError, HoconValue};
 use nom_language::error::VerboseError;
 
 pub struct Workspace {
