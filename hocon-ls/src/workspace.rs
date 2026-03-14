@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use rusty_hocon::parser::{parse, HoconError, HoconValue};
 use nom_language::error::VerboseError;
+use rusty_hocon::parser::{HoconError, HoconValue, parse};
 
 pub struct Workspace {
     open_files: HashMap<String, OpenFile>,

@@ -2,8 +2,8 @@ use std::error::Error;
 
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
-    notification::DidOpenTextDocument, request::GotoDefinition, GotoDefinitionResponse, InitializeParams, OneOf,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
+    GotoDefinitionResponse, InitializeParams, OneOf, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind, notification::DidOpenTextDocument, request::GotoDefinition,
 };
 use workspace::Workspace;
 

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use nom::{
+    IResult, Parser,
     branch::alt,
     bytes::complete::{tag, take_while, take_while_m_n},
     character::{anychar, complete::char, one_of},
@@ -9,7 +10,6 @@ use nom::{
     multi::{many0, many1, separated_list0},
     number::complete::double,
     sequence::{delimited, preceded, terminated},
-    IResult, Parser,
 };
 use nom_language::error::convert_error;
 use thiserror::Error;
@@ -71,9 +71,15 @@ pub enum HoconError {
 
 /// Parses the given input as a Hocon document into a Hocon AST.
 pub fn parse<'a, E: ParseError<&'a str>>(input: &'a str) -> Result<HoconValue<'a>, HoconError> {
-    let r = alt((empty_content, parse_root_object)).parse(input);
+    let r = alt((empty_content, map((parse_root_object, opt(whitespace)), |(o, _)| o))).parse(input);
     match r {
-        Ok((_, value)) => Ok(value),
+        Ok(("", value)) => Ok(value),
+        Ok((remainder, value)) => Err(HoconError::ParseError {
+            msg: format!(
+                "Failed to consume all data. parsed: {:?}, remainder: {}",
+                value, remainder
+            ),
+        }),
         Err(nom::Err::Error(e)) => {
             let msg = convert_error(input, e);
             Err(HoconError::ParseError { msg })
@@ -115,6 +121,11 @@ fn is_hocon_whitespace(c: char) -> bool {
 fn whitespace<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, (), E> {
     let (input, _) = take_while(is_hocon_whitespace)(input)?;
     Ok((input, ()))
+}
+
+fn whitespace_same_line<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, &'a str, E> {
+    let (input, ws) = take_while(|c| c != '\n' && is_hocon_whitespace(c)).parse(input)?;
+    Ok((input, ws))
 }
 
 fn unquoted_string<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, &'a str, E> {
@@ -210,17 +221,11 @@ fn parse_value<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, H
     ))
     .parse(input)?;
 
-    fn concat_whitespace<'a, 'b, E: ParseError<&'a str>>(
-        prior: &'b HoconValue<'a>,
-    ) -> impl Fn(&'a str) -> IResult<&'a str, Option<&'a str>, E> + 'b {
-        move |input| match prior {
-            HoconValue::HoconObject(_) | HoconValue::HoconArray(_) => map(whitespace, |_| None::<&'a str>).parse(input),
-            // Do not allow new line spanning concatenation for string concatenation
-            _ => map(take_while(|c| c != '\n' && is_hocon_whitespace(c)), Some).parse(input),
-        }
+    fn concat_whitespace<'a, 'b, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, Option<&'a str>, E> {
+        map(whitespace_same_line, |ws| if ws.is_empty() { None } else { Some(ws) }).parse(input)
     }
 
-    let (remainder, maybe_concat) = opt((concat_whitespace(&a), parse_value)).parse(remainder)?;
+    let (remainder, maybe_concat) = opt((concat_whitespace, parse_value)).parse(remainder)?;
     let result = match maybe_concat {
         None => a,
         Some((ws, b)) => HoconValue::HoconConcat(Box::new(HoconConcatenation { a, whitespace: ws, b })),
@@ -272,15 +277,15 @@ fn array<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconVa
     }
 
     delimited(
-        char('['),
+        (char('['), whitespace),
         map(
             terminated(
-                separated_list0(alt((char(','), char('\n'))), array_element),
-                opt(char(',')),
+                separated_list0((whitespace_same_line, alt((char(','), char('\n')))), array_element),
+                opt((whitespace, char(','))),
             ),
             HoconValue::HoconArray,
         ),
-        char(']'),
+        (whitespace, char(']')),
     )
     .parse(input)
 }
@@ -465,15 +470,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_array() {
+    #[rstest]
+    #[case::no_whitespace("[1,2,3]")]
+    #[case::dense_whitespace("[1, 2, 3]")]
+    #[case::usual_whitespace("[ 1, 2, 3 ]")]
+    #[case::max_whitespace("[ 1 , 2 , 3 ]")]
+    #[case::trailing_whitespace("[ 1 , 2 , 3 , ]")]
+    #[case::new_lines("[\n1 \n2 \n3\n]")]
+    #[case::mix_separators("[\n1 \n2, 3]")]
+    fn test_array(#[case] input: &str) {
         let expected_data = vec![
             HoconValue::HoconNumber(1f64),
             HoconValue::HoconNumber(2f64),
             HoconValue::HoconNumber(3f64),
         ];
         assert_eq!(
-            array::<VerboseError<&str>>("[1,2,3]"),
+            array::<VerboseError<&str>>(input),
             Ok(("", HoconValue::HoconArray(expected_data)))
         );
     }
@@ -498,6 +510,23 @@ mod tests {
         assert_eq!(
             array::<VerboseError<&str>>("[1\n2\n3]"),
             array::<VerboseError<&str>>("[1,2,3]")
+        );
+    }
+
+    #[test]
+    fn parse_array_concat() {
+        let content = "a : [ 1, 2 ] [ 3, 4 ]";
+        let expected = vec![HoconField::KeyValue(
+            HoconString::Unquoted("a"),
+            HoconValue::HoconConcat(Box::new(HoconConcatenation {
+                a: HoconValue::HoconArray(vec![HoconValue::HoconNumber(1.0), HoconValue::HoconNumber(2.0)]),
+                whitespace: Some(" "),
+                b: HoconValue::HoconArray(vec![HoconValue::HoconNumber(3.0), HoconValue::HoconNumber(4.0)]),
+            })),
+        )];
+        assert_eq!(
+            parse::<VerboseError<&str>>(content),
+            Ok(HoconValue::HoconObject(expected))
         );
     }
 
@@ -578,6 +607,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_object_with_concatenation() {
+        let content = "a : { b : 1 } { c : 2 }";
+        let expected = vec![HoconField::KeyValue(
+            HoconString::Unquoted("a"),
+            HoconValue::HoconConcat(Box::new(HoconConcatenation {
+                a: HoconValue::HoconObject(vec![HoconField::KeyValue(
+                    HoconString::Unquoted("b"),
+                    HoconValue::HoconNumber(1.0),
+                )]),
+                whitespace: Some(" "),
+                b: HoconValue::HoconObject(vec![HoconField::KeyValue(
+                    HoconString::Unquoted("c"),
+                    HoconValue::HoconNumber(2.0),
+                )]),
+            })),
+        )];
+        assert_eq!(
+            parse::<VerboseError<&str>>(content),
+            Ok(HoconValue::HoconObject(expected))
+        );
+    }
+
+    #[test]
     fn parse_inclusion() {
         let content = r#"include file("test.conf")"#;
         let expected = HoconInclusion::File("test.conf");
@@ -637,6 +689,48 @@ mod tests {
 
         "#;
         let expected = vec![];
+        assert_eq!(
+            parse::<VerboseError<&str>>(content),
+            Ok(HoconValue::HoconObject(expected))
+        );
+    }
+
+    #[test]
+    fn test_scenario_nested_object() {
+        let content = r#"
+        database: {
+          hostname: "localhost"
+          username: "user"
+          password: "secret"
+        }
+        some_string: "1h"
+        some_number: 1148
+        "#;
+
+        let expected = vec![
+            HoconField::KeyValue(
+                HoconString::Unquoted("database"),
+                HoconValue::HoconObject(vec![
+                    HoconField::KeyValue(
+                        HoconString::Unquoted("hostname"),
+                        HoconValue::HoconString(HoconString::Quoted("localhost")),
+                    ),
+                    HoconField::KeyValue(
+                        HoconString::Unquoted("username"),
+                        HoconValue::HoconString(HoconString::Quoted("user")),
+                    ),
+                    HoconField::KeyValue(
+                        HoconString::Unquoted("password"),
+                        HoconValue::HoconString(HoconString::Quoted("secret")),
+                    ),
+                ]),
+            ),
+            HoconField::KeyValue(
+                HoconString::Unquoted("some_string"),
+                HoconValue::HoconString(HoconString::Quoted("1h")),
+            ),
+            HoconField::KeyValue(HoconString::Unquoted("some_number"), HoconValue::HoconNumber(1148.0)),
+        ];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
             Ok(HoconValue::HoconObject(expected))
