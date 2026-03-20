@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use nom::{
     IResult, Parser,
     branch::alt,
@@ -12,62 +10,11 @@ use nom::{
     sequence::{delimited, preceded, terminated},
 };
 use nom_language::error::convert_error;
-use thiserror::Error;
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct HoconObject<'a> {
-    pub data: HashMap<String, HoconValue<'a>>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum HoconInclusion<'a> {
-    File(&'a str),
-    Url(&'a str),
-    Classpath(&'a str),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum HoconField<'a> {
-    Include(HoconInclusion<'a>),
-    KeyValue(HoconString<'a>, HoconValue<'a>),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum HoconString<'a> {
-    Quoted(&'a str),
-    Unquoted(&'a str),
-}
-
-/// Represents the concatenation of two hocon values while preserving the white space in between the
-/// two values
-#[derive(Clone, Debug, PartialEq)]
-pub struct HoconConcatenation<'a> {
-    pub a: HoconValue<'a>,
-    pub whitespace: Option<&'a str>,
-    pub b: HoconValue<'a>,
-}
-
-/// Represents a hocon value within the AST representation.
-/// As this meant for AST the structure is kept close to the source document
-#[derive(Clone, Debug, PartialEq)]
-pub enum HoconValue<'a> {
-    HoconString(HoconString<'a>),
-    HoconNumber(f64),
-    HoconObject(Vec<HoconField<'a>>),
-    HoconArray(Vec<HoconValue<'a>>),
-    HoconBoolean(bool),
-    HoconNull,
-    HoconInclude(HoconInclusion<'a>),
-    HoconConcat(Box<HoconConcatenation<'a>>),
-}
-
-/// Represents the various modes of failure while parsing or evaluating hocon files.
-#[derive(Error, Debug, PartialEq)]
-pub enum HoconError {
-    // TODO Integrate better with nom error to get better parsing error docs
-    #[error("Parse error")]
-    ParseError { msg: String },
-}
+use crate::{
+    ast::{HoconConcatenation, HoconField, HoconInclusion, HoconString, HoconValue},
+    config::HoconError,
+};
 
 /// Parses the given input as a Hocon document into a Hocon AST.
 pub fn parse<'a, E: ParseError<&'a str>>(input: &'a str) -> Result<HoconValue<'a>, HoconError> {
@@ -91,17 +38,17 @@ pub fn parse<'a, E: ParseError<&'a str>>(input: &'a str) -> Result<HoconValue<'a
 }
 
 fn empty_content<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
-    map(all_consuming(whitespace), |_| HoconValue::HoconObject(vec![])).parse(input)
+    map(all_consuming(whitespace), |_| HoconValue::Object(vec![])).parse(input)
 }
 
 fn null<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
     let (input, _) = tag("null")(input)?;
-    Ok((input, HoconValue::HoconNull))
+    Ok((input, HoconValue::Null))
 }
 
 fn boolean<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
-    let parse_true = value(HoconValue::HoconBoolean(true), tag("true"));
-    let parse_false = value(HoconValue::HoconBoolean(false), tag("false"));
+    let parse_true = value(HoconValue::Boolean(true), tag("true"));
+    let parse_false = value(HoconValue::Boolean(false), tag("false"));
     alt((parse_true, parse_false)).parse(input)
 }
 
@@ -183,7 +130,7 @@ fn parse_string<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, 
 }
 
 fn number<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
-    map(double, HoconValue::HoconNumber).parse(input)
+    map(double, HoconValue::Number).parse(input)
 }
 
 fn include<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconInclusion<'a>, E> {
@@ -212,12 +159,12 @@ fn include<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, Hocon
 fn parse_value<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
     let (remainder, a) = alt((
         null,
-        map(include, HoconValue::HoconInclude),
+        map(include, HoconValue::Include),
         boolean,
         number,
         array,
         parse_object,
-        map(parse_string, HoconValue::HoconString),
+        map(parse_string, HoconValue::String),
     ))
     .parse(input)?;
 
@@ -228,7 +175,7 @@ fn parse_value<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, H
     let (remainder, maybe_concat) = opt((concat_whitespace, parse_value)).parse(remainder)?;
     let result = match maybe_concat {
         None => a,
-        Some((ws, b)) => HoconValue::HoconConcat(Box::new(HoconConcatenation { a, whitespace: ws, b })),
+        Some((ws, b)) => HoconValue::Concat(Box::new(HoconConcatenation { a, whitespace: ws, b })),
     };
 
     Ok((remainder, result))
@@ -283,7 +230,7 @@ fn array<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconVa
                 separated_list0((whitespace_same_line, alt((char(','), char('\n')))), array_element),
                 opt((whitespace, char(','))),
             ),
-            HoconValue::HoconArray,
+            HoconValue::Array,
         ),
         (whitespace, char(']')),
     )
@@ -296,7 +243,7 @@ fn parse_root_object<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a 
             delimited(char('{'), many0(object_field), (whitespace, char('}'))),
             many1(object_field),
         )),
-        HoconValue::HoconObject,
+        HoconValue::Object,
     )
     .parse(input)
 }
@@ -304,7 +251,7 @@ fn parse_root_object<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a 
 fn parse_object<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, HoconValue<'a>, E> {
     map(
         delimited(char('{'), many0(object_field), (whitespace, char('}'))),
-        HoconValue::HoconObject,
+        HoconValue::Object,
     )
     .parse(input)
 }
@@ -320,14 +267,14 @@ mod tests {
 
     #[test]
     fn test_null() {
-        assert_eq!(null::<VerboseError<&str>>("null"), Ok(("", HoconValue::HoconNull)));
+        assert_eq!(null::<VerboseError<&str>>("null"), Ok(("", HoconValue::Null)));
     }
 
     #[test]
     fn test_boolean_true() {
         assert_eq!(
             boolean::<VerboseError<&str>>("true"),
-            Ok(("", HoconValue::HoconBoolean(true)))
+            Ok(("", HoconValue::Boolean(true)))
         );
     }
 
@@ -335,7 +282,7 @@ mod tests {
     fn test_boolean_false() {
         assert_eq!(
             boolean::<VerboseError<&str>>("false"),
-            Ok(("", HoconValue::HoconBoolean(false)))
+            Ok(("", HoconValue::Boolean(false)))
         );
     }
 
@@ -384,31 +331,31 @@ mod tests {
 
         let expected = vec![HoconField::KeyValue(
             HoconString::Unquoted("one"),
-            HoconValue::HoconConcat(Box::new(HoconConcatenation {
-                a: HoconValue::HoconString(a),
+            HoconValue::Concat(Box::new(HoconConcatenation {
+                a: HoconValue::String(a),
                 whitespace: Some(" "),
-                b: HoconValue::HoconString(b),
+                b: HoconValue::String(b),
             })),
         )];
         assert_eq!(
             parse::<VerboseError<&str>>(input),
-            Ok(HoconValue::HoconObject(expected))
+            Ok(HoconValue::Object(expected))
         );
     }
 
     #[rstest]
     #[case::string_boolean(
         "one false",
-        HoconValue::HoconString(HoconString::Unquoted("one")),
-        HoconValue::HoconBoolean(false)
+        HoconValue::String(HoconString::Unquoted("one")),
+        HoconValue::Boolean(false)
     )]
     #[case::string_number(
         "one 12",
-        HoconValue::HoconString(HoconString::Unquoted("one")),
-        HoconValue::HoconNumber(12.0)
+        HoconValue::String(HoconString::Unquoted("one")),
+        HoconValue::Number(12.0)
     )]
     fn test_concat_simple_types(#[case] input: &str, #[case] a: HoconValue, #[case] b: HoconValue) {
-        let expected = HoconValue::HoconConcat(Box::new(HoconConcatenation {
+        let expected = HoconValue::Concat(Box::new(HoconConcatenation {
             a,
             whitespace: Some(" "),
             b,
@@ -443,7 +390,7 @@ mod tests {
     fn test_key_value() {
         assert_eq!(
             key_value::<VerboseError<&str>>("test = true"),
-            Ok(("", (HoconString::Unquoted("test"), HoconValue::HoconBoolean(true))))
+            Ok(("", (HoconString::Unquoted("test"), HoconValue::Boolean(true))))
         );
     }
 
@@ -456,7 +403,7 @@ mod tests {
                 r#" "world": "hello""#,
                 (
                     HoconString::Quoted("hello"),
-                    HoconValue::HoconString(HoconString::Quoted("world"))
+                    HoconValue::String(HoconString::Quoted("world"))
                 )
             ))
         );
@@ -466,7 +413,7 @@ mod tests {
     fn test_number() {
         assert_eq!(
             number::<VerboseError<&str>>("42"),
-            Ok(("", HoconValue::HoconNumber(42f64)))
+            Ok(("", HoconValue::Number(42f64)))
         );
     }
 
@@ -480,13 +427,13 @@ mod tests {
     #[case::mix_separators("[\n1 \n2, 3]")]
     fn test_array(#[case] input: &str) {
         let expected_data = vec![
-            HoconValue::HoconNumber(1f64),
-            HoconValue::HoconNumber(2f64),
-            HoconValue::HoconNumber(3f64),
+            HoconValue::Number(1f64),
+            HoconValue::Number(2f64),
+            HoconValue::Number(3f64),
         ];
         assert_eq!(
             array::<VerboseError<&str>>(input),
-            Ok(("", HoconValue::HoconArray(expected_data)))
+            Ok(("", HoconValue::Array(expected_data)))
         );
     }
 
@@ -496,10 +443,10 @@ mod tests {
             array::<VerboseError<&str>>("[1,2,3,]"),
             Ok((
                 "",
-                HoconValue::HoconArray(vec![
-                    HoconValue::HoconNumber(1.0),
-                    HoconValue::HoconNumber(2.0),
-                    HoconValue::HoconNumber(3.0),
+                HoconValue::Array(vec![
+                    HoconValue::Number(1.0),
+                    HoconValue::Number(2.0),
+                    HoconValue::Number(3.0),
                 ])
             ))
         );
@@ -518,15 +465,15 @@ mod tests {
         let content = "a : [ 1, 2 ] [ 3, 4 ]";
         let expected = vec![HoconField::KeyValue(
             HoconString::Unquoted("a"),
-            HoconValue::HoconConcat(Box::new(HoconConcatenation {
-                a: HoconValue::HoconArray(vec![HoconValue::HoconNumber(1.0), HoconValue::HoconNumber(2.0)]),
+            HoconValue::Concat(Box::new(HoconConcatenation {
+                a: HoconValue::Array(vec![HoconValue::Number(1.0), HoconValue::Number(2.0)]),
                 whitespace: Some(" "),
-                b: HoconValue::HoconArray(vec![HoconValue::HoconNumber(3.0), HoconValue::HoconNumber(4.0)]),
+                b: HoconValue::Array(vec![HoconValue::Number(3.0), HoconValue::Number(4.0)]),
             })),
         )];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
-            Ok(HoconValue::HoconObject(expected))
+            Ok(HoconValue::Object(expected))
         );
     }
 
@@ -535,11 +482,11 @@ mod tests {
         let content = r#"{ "hello": "world" }"#;
         let expected = vec![HoconField::KeyValue(
             HoconString::Quoted("hello"),
-            HoconValue::HoconString(HoconString::Quoted("world")),
+            HoconValue::String(HoconString::Quoted("world")),
         )];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
-            Ok(HoconValue::HoconObject(expected))
+            Ok(HoconValue::Object(expected))
         );
     }
 
@@ -549,16 +496,16 @@ mod tests {
         let expected = vec![
             HoconField::KeyValue(
                 HoconString::Quoted("hello"),
-                HoconValue::HoconString(HoconString::Quoted("world")),
+                HoconValue::String(HoconString::Quoted("world")),
             ),
             HoconField::KeyValue(
                 HoconString::Quoted("world"),
-                HoconValue::HoconString(HoconString::Quoted("hello")),
+                HoconValue::String(HoconString::Quoted("hello")),
             ),
         ];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
-            Ok(HoconValue::HoconObject(expected))
+            Ok(HoconValue::Object(expected))
         );
     }
 
@@ -571,16 +518,16 @@ mod tests {
         let expected = vec![
             HoconField::KeyValue(
                 HoconString::Quoted("hello"),
-                HoconValue::HoconString(HoconString::Quoted("world")),
+                HoconValue::String(HoconString::Quoted("world")),
             ),
             HoconField::KeyValue(
                 HoconString::Quoted("world"),
-                HoconValue::HoconString(HoconString::Quoted("hello")),
+                HoconValue::String(HoconString::Quoted("hello")),
             ),
         ];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
-            Ok(HoconValue::HoconObject(expected))
+            Ok(HoconValue::Object(expected))
         );
     }
 
@@ -593,16 +540,16 @@ mod tests {
         let expected = vec![
             HoconField::KeyValue(
                 HoconString::Unquoted("hello"),
-                HoconValue::HoconString(HoconString::Quoted("world")),
+                HoconValue::String(HoconString::Quoted("world")),
             ),
             HoconField::KeyValue(
                 HoconString::Unquoted("world"),
-                HoconValue::HoconString(HoconString::Quoted("hello")),
+                HoconValue::String(HoconString::Quoted("hello")),
             ),
         ];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
-            Ok(HoconValue::HoconObject(expected))
+            Ok(HoconValue::Object(expected))
         );
     }
 
@@ -611,21 +558,21 @@ mod tests {
         let content = "a : { b : 1 } { c : 2 }";
         let expected = vec![HoconField::KeyValue(
             HoconString::Unquoted("a"),
-            HoconValue::HoconConcat(Box::new(HoconConcatenation {
-                a: HoconValue::HoconObject(vec![HoconField::KeyValue(
+            HoconValue::Concat(Box::new(HoconConcatenation {
+                a: HoconValue::Object(vec![HoconField::KeyValue(
                     HoconString::Unquoted("b"),
-                    HoconValue::HoconNumber(1.0),
+                    HoconValue::Number(1.0),
                 )]),
                 whitespace: Some(" "),
-                b: HoconValue::HoconObject(vec![HoconField::KeyValue(
+                b: HoconValue::Object(vec![HoconField::KeyValue(
                     HoconString::Unquoted("c"),
-                    HoconValue::HoconNumber(2.0),
+                    HoconValue::Number(2.0),
                 )]),
             })),
         )];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
-            Ok(HoconValue::HoconObject(expected))
+            Ok(HoconValue::Object(expected))
         );
     }
 
@@ -645,12 +592,12 @@ mod tests {
             HoconField::Include(HoconInclusion::File("test.conf")),
             HoconField::KeyValue(
                 HoconString::Unquoted("hello"),
-                HoconValue::HoconString(HoconString::Quoted("world")),
+                HoconValue::String(HoconString::Quoted("world")),
             ),
         ];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
-            Ok(HoconValue::HoconObject(expected))
+            Ok(HoconValue::Object(expected))
         );
     }
 
@@ -661,11 +608,11 @@ mod tests {
         "#;
         let expected = vec![HoconField::KeyValue(
             HoconString::Unquoted("hello"),
-            HoconValue::HoconInclude(HoconInclusion::File("test.conf")),
+            HoconValue::Include(HoconInclusion::File("test.conf")),
         )];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
-            Ok(HoconValue::HoconObject(expected))
+            Ok(HoconValue::Object(expected))
         );
     }
 
@@ -673,14 +620,14 @@ mod tests {
     fn parse_empty_line() {
         assert_eq!(
             empty_content::<VerboseError<&str>>(""),
-            Ok(("", HoconValue::HoconObject(vec![])))
+            Ok(("", HoconValue::Object(vec![])))
         );
-        assert_eq!(parse::<VerboseError<&str>>(""), Ok(HoconValue::HoconObject(vec![])));
+        assert_eq!(parse::<VerboseError<&str>>(""), Ok(HoconValue::Object(vec![])));
     }
 
     #[test]
     fn parse_empty_line_whitespace() {
-        assert_eq!(parse::<VerboseError<&str>>("   "), Ok(HoconValue::HoconObject(vec![])));
+        assert_eq!(parse::<VerboseError<&str>>("   "), Ok(HoconValue::Object(vec![])));
     }
 
     #[test]
@@ -691,7 +638,7 @@ mod tests {
         let expected = vec![];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
-            Ok(HoconValue::HoconObject(expected))
+            Ok(HoconValue::Object(expected))
         );
     }
 
@@ -710,30 +657,30 @@ mod tests {
         let expected = vec![
             HoconField::KeyValue(
                 HoconString::Unquoted("database"),
-                HoconValue::HoconObject(vec![
+                HoconValue::Object(vec![
                     HoconField::KeyValue(
                         HoconString::Unquoted("hostname"),
-                        HoconValue::HoconString(HoconString::Quoted("localhost")),
+                        HoconValue::String(HoconString::Quoted("localhost")),
                     ),
                     HoconField::KeyValue(
                         HoconString::Unquoted("username"),
-                        HoconValue::HoconString(HoconString::Quoted("user")),
+                        HoconValue::String(HoconString::Quoted("user")),
                     ),
                     HoconField::KeyValue(
                         HoconString::Unquoted("password"),
-                        HoconValue::HoconString(HoconString::Quoted("secret")),
+                        HoconValue::String(HoconString::Quoted("secret")),
                     ),
                 ]),
             ),
             HoconField::KeyValue(
                 HoconString::Unquoted("some_string"),
-                HoconValue::HoconString(HoconString::Quoted("1h")),
+                HoconValue::String(HoconString::Quoted("1h")),
             ),
-            HoconField::KeyValue(HoconString::Unquoted("some_number"), HoconValue::HoconNumber(1148.0)),
+            HoconField::KeyValue(HoconString::Unquoted("some_number"), HoconValue::Number(1148.0)),
         ];
         assert_eq!(
             parse::<VerboseError<&str>>(content),
-            Ok(HoconValue::HoconObject(expected))
+            Ok(HoconValue::Object(expected))
         );
     }
 }

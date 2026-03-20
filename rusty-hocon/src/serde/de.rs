@@ -3,7 +3,7 @@ use core::fmt;
 use nom_language::error::VerboseError;
 use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, Visitor};
 
-use crate::parser::{HoconError, HoconField, HoconString, HoconValue};
+use crate::config::{Config, HoconError, ResolvedValue};
 
 impl serde::de::Error for HoconError {
     fn custom<T: fmt::Display>(e: T) -> Self {
@@ -29,23 +29,10 @@ impl<'de, 'a> MapAccess<'de> for HoconObjectIter<'a, 'de> {
     where
         K: de::DeserializeSeed<'de>,
     {
-        match &mut self.de.input {
-            HoconValue::HoconObject(elements) => {
-                if !self.first {
-                    elements.remove(0);
-                } else {
-                    self.first = false;
-                }
-
-                if elements.is_empty() {
-                    Ok(None)
-                } else {
-                    seed.deserialize(&mut *self.de).map(Some)
-                }
-            }
-            _ => Err(HoconError::ParseError {
-                msg: "Expected object type".to_owned(),
-            }),
+        if self.de.input.is_empty() {
+            Ok(None)
+        } else {
+            seed.deserialize(&mut *self.de).map(Some)
         }
     }
 
@@ -54,7 +41,7 @@ impl<'de, 'a> MapAccess<'de> for HoconObjectIter<'a, 'de> {
         V: de::DeserializeSeed<'de>,
     {
         match &mut self.de.input {
-            HoconValue::HoconObject(map) => {
+            ResolvedValue::Object(map) => {
                 if let Some(HoconField::KeyValue(_, value)) = map.first() {
                     let mut value_deser = HoconDeserializer {
                         input: value.to_owned(),
@@ -74,13 +61,14 @@ impl<'de, 'a> MapAccess<'de> for HoconObjectIter<'a, 'de> {
 }
 
 pub struct HoconDeserializer<'de> {
-    input: HoconValue<'de>,
+    input: Config<'de>,
 }
 
 impl<'de> HoconDeserializer<'de> {
     pub fn from_str(input: &'de str) -> Result<Self, HoconError> {
         let input = crate::parser::parse::<VerboseError<&'de str>>(input)?;
-        Ok(HoconDeserializer { input })
+        let resolved = crate::config::resolve(input)?;
+        Ok(HoconDeserializer { input: resolved })
     }
 }
 
@@ -200,8 +188,7 @@ impl<'de, 'a> Deserializer<'de> for &'a mut HoconDeserializer<'de> {
         V: Visitor<'de>,
     {
         match self.input {
-            HoconValue::HoconString(HoconString::Quoted(value)) => visitor.visit_borrowed_str(value),
-            HoconValue::HoconString(HoconString::Unquoted(value)) => visitor.visit_borrowed_str(value),
+            ResolvedValue::String(value) => visitor.visit_borrowed_str(&value),
             _ => Err(HoconError::ParseError {
                 msg: "Expected string type".to_owned(),
             }),
@@ -276,7 +263,7 @@ impl<'de, 'a> Deserializer<'de> for &'a mut HoconDeserializer<'de> {
         V: Visitor<'de>,
     {
         match &mut self.input {
-            HoconValue::HoconObject(_) => {
+            HoconValue::Object(_) => {
                 let object_iter = HoconObjectIter::new(self);
                 visitor.visit_map(object_iter)
             }
@@ -315,7 +302,7 @@ impl<'de, 'a> Deserializer<'de> for &'a mut HoconDeserializer<'de> {
         V: Visitor<'de>,
     {
         match &mut self.input {
-            HoconValue::HoconObject(map) => match map.first().map(|s| s.to_owned()) {
+            HoconValue::Object(map) => match map.first().map(|s| s.to_owned()) {
                 Some(HoconField::KeyValue(HoconString::Quoted(key), _)) => visitor.visit_borrowed_str(key),
                 Some(HoconField::KeyValue(HoconString::Unquoted(key), _)) => visitor.visit_borrowed_str(key),
                 _ => Err(HoconError::ParseError {
