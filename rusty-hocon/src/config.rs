@@ -128,18 +128,17 @@ impl<'a> Config<'a> {
         }
     }
 
-    pub fn get_str(&'a self, path: &str) -> Result<&'a str, AccessError> {
-        match self.fields.get(path) {
-            Some(ResolvedValue::String(s)) => Ok(s),
-            Some(_) => Err(AccessError::TypeMismatch),
-            None => Err(AccessError::Missing),
-        }
+    #[inline]
+    pub fn get<T: TryFrom<&'a ResolvedValue<'a>>>(&'a self, path: &str) -> T {
+        self.try_get(path).unwrap()
     }
 
-    pub fn get_i32(&'a self, path: &str) -> Result<i32, AccessError> {
+    pub fn try_get<T: TryFrom<&'a ResolvedValue<'a>>>(&'a self, path: &str) -> Result<T, AccessError> {
         match self.fields.get(path) {
-            Some(ResolvedValue::Number(n)) => Ok(*n as i32),
-            Some(_) => Err(AccessError::TypeMismatch),
+            Some(value) => match T::try_from(value) {
+                Ok(r) => Ok(r),
+                Err(_) => Err(AccessError::TypeMismatch),
+            },
             None => Err(AccessError::Missing),
         }
     }
@@ -258,28 +257,55 @@ fn promote_to_string<'a>(path: &str, value: ResolvedValue<'a>) -> Result<Cow<'a,
     }
 }
 
+impl <'a> TryFrom<&'a ResolvedValue<'a>> for i32 {
+    type Error = AccessError;
+
+    fn try_from(value: &'a ResolvedValue<'a>) -> Result<Self, Self::Error> {
+        if let ResolvedValue::Number(n) = value {
+            Ok(*n as i32)
+        } else {
+            Err(AccessError::TypeMismatch)
+        }
+    }
+}
+
+impl <'a> TryFrom<&'a ResolvedValue<'a>> for &'a str {
+    type Error = AccessError;
+
+    fn try_from(value: &'a ResolvedValue<'a>) -> Result<Self, Self::Error> {
+        if let ResolvedValue::String(n) = value {
+            Ok(n)
+        } else {
+            Err(AccessError::TypeMismatch)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{ast::{HoconConcatenation, HoconField, HoconString, HoconValue}, config::resolve};
+    use crate::{
+        ast::{HoconConcatenation, HoconField, HoconString, HoconValue},
+        config::resolve,
+    };
 
     #[test]
     fn test_string() {
         let input = HoconValue::Object(vec![HoconField::KeyValue(
             HoconString::Unquoted("one"),
-            HoconValue::String(HoconString::Unquoted("one"))
+            HoconValue::String(HoconString::Unquoted("one")),
         )]);
         let conf = resolve(input).unwrap();
-        assert_eq!(conf.get_str("one"), Ok("one"));
+        assert_eq!(conf.get::<&str>("one"), "one");
     }
 
     #[test]
     fn test_i32() {
         let input = HoconValue::Object(vec![HoconField::KeyValue(
             HoconString::Unquoted("one"),
-            HoconValue::Number(42f64)
+            HoconValue::Number(42f64),
         )]);
         let conf = resolve(input).unwrap();
-        assert_eq!(conf.get_i32("one"), Ok(42));
+        assert_eq!(conf.get::<i32>("one"), 42);
     }
 
     #[test]
@@ -293,6 +319,6 @@ mod tests {
             })),
         )]);
         let conf = resolve(input).unwrap();
-        assert_eq!(conf.get_str("one"), Ok("one two"));
+        assert_eq!(conf.get::<&str>("one"), "one two");
     }
 }
