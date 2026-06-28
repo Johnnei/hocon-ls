@@ -257,7 +257,7 @@ fn promote_to_string<'a>(path: &str, value: ResolvedValue<'a>) -> Result<Cow<'a,
     }
 }
 
-impl <'a> TryFrom<&'a ResolvedValue<'a>> for i32 {
+impl<'a> TryFrom<&'a ResolvedValue<'a>> for i32 {
     type Error = AccessError;
 
     fn try_from(value: &'a ResolvedValue<'a>) -> Result<Self, Self::Error> {
@@ -269,7 +269,7 @@ impl <'a> TryFrom<&'a ResolvedValue<'a>> for i32 {
     }
 }
 
-impl <'a> TryFrom<&'a ResolvedValue<'a>> for &'a str {
+impl<'a> TryFrom<&'a ResolvedValue<'a>> for &'a str {
     type Error = AccessError;
 
     fn try_from(value: &'a ResolvedValue<'a>) -> Result<Self, Self::Error> {

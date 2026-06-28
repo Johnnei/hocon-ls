@@ -19,22 +19,28 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let (connection, io_threads) = Connection::stdio();
 
     // Run the server and wait for the two threads to end (typically by trigger LSP Exit event).
-    let server_capabilities = serde_json::to_value(ServerCapabilities {
+    let server_capabilities = ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         definition_provider: Some(OneOf::Left(true)),
         ..Default::default()
-    })
-    .unwrap();
-    let initialization_params = match connection.initialize(server_capabilities) {
-        Ok(it) => it,
-        Err(e) => {
-            if e.channel_is_disconnected() {
-                io_threads.join()?;
-            }
-            return Err(e.into());
-        }
     };
-    main_loop(connection, initialization_params)?;
+    let (id, params) = connection.initialize_start()?;
+
+    let initialize_data = serde_json::json!({
+        "capabilities": server_capabilities,
+        "serverInfo": {
+            "name": "hocon-ls",
+            "version": VERSION
+        }
+    });
+
+    if let Err(e) = connection.initialize_finish(id, initialize_data) {
+        if e.channel_is_disconnected() {
+            io_threads.join()?;
+        }
+        return Err(e.into());
+    };
+    main_loop(connection, params)?;
     io_threads.join()?;
 
     // Shut down gracefully.
