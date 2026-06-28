@@ -18,4 +18,4 @@ serde = { version = "1.0.204", optional = true }
 
 [dev-dependencies]
 rstest = "0.26.1"
-serde = { version = "1.0.204", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
